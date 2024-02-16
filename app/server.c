@@ -54,8 +54,12 @@ int main() {
     }
     printf("Client connected\n");
 
-    char buff[] = "+PONG\r\n";
-    write(client_fd, buff, sizeof(buff)-1);
+    char pong_buff[] = "+PONG\r\n";
+    char cmd_buff[256];
+    while (read(client_fd, cmd_buff, 255)) {
+        printf("Command received: %s \n", cmd_buff);
+        write(client_fd, pong_buff, sizeof(pong_buff)-1);
+    };
 
     close(server_fd);
 
