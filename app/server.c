@@ -12,7 +12,7 @@
 #define SERVER_FD_IDX 0
 #define MAX_CLIENT 256
 #define MAX_CMD_LEN 256
-#define MAX_RAW_CMD_LEN 256
+#define MAX_OPER_LEN 64
 
 int server_init(int port, int backlog) {
     int server_fd;
@@ -82,52 +82,67 @@ int add_client(struct client_pool *this) {
     this->fds[this->nfds].revents = 0;
     return this->nfds++;
 }
-int split_raw_cmd(char* raw_cmd, int raw_cmd_len, char** cmd) {
-    char buff[MAX_RAW_CMD_LEN];
-    int cmd_len = 0, buff_len = 0;
-    for (int i = 0; i < raw_cmd_len; i++) {
-        if (raw_cmd[i] != '\r') {
-            buff[buff_len++] = raw_cmd[i];
-            continue;
-        }
-        buff[buff_len++] = '\0';
-        cmd[cmd_len] = malloc(buff_len);
-        strcpy(cmd[cmd_len], buff);
-        if (++cmd_len == MAX_CMD_LEN)
-            break;
-        buff_len = 0;
-        ++i;
+int read_array_len(char** cmd_ptr) {
+    if (**cmd_ptr != '*') {
+        printf("Invalid array identifier: %c\n", *cmd_ptr);
+        return -1;
     }
-    return cmd_len;
+    int len = 0;
+    while (*(++(*cmd_ptr)) != '\r')
+        len = len*10 + (**cmd_ptr-'0');
+    *cmd_ptr += 2;
+    return len;
+}
+int read_bulk_string(char** cmd_ptr, char* buff, int max_len) {
+    if (**cmd_ptr != '$') {
+        printf("Invalid bulk string identifier: %c\n", **cmd_ptr);
+        return -1;
+    }
+    int len = 0;
+    while (*(++(*cmd_ptr)) != '\r')
+        len = len*10 + (**cmd_ptr-'0');
+    *cmd_ptr += 2;
+    int i = 0;
+    for (; i < len && i < max_len-1; i++)
+        buff[i] = (*cmd_ptr)[i];
+    buff[i] = '\0';
+    *cmd_ptr += len+2;
+    return len;
+}
+int handle_PING(char** cmd_ptr, int client_fd) {
+    char pong_buff[] = "+PONG\r\n";
+    write(client_fd, pong_buff, sizeof(pong_buff)-1);
+    return 0;
+}
+int handle_ECHO(char** cmd_ptr, int client_fd) {
+    char echo_buff[256];
+    char arg[256];
+    int arg_len = read_bulk_string(cmd_ptr, arg, 256);
+    int echo_buff_len = snprintf(echo_buff, 256, "$%d\r\n%s\r\n", arg_len, arg);
+    write(client_fd, echo_buff, echo_buff_len);
+    return 0;
 }
 int handle_cmd(int client_fd) {
-    char raw_cmd[MAX_RAW_CMD_LEN];
-    int raw_cmd_len;
-    if ((raw_cmd_len = read(client_fd, raw_cmd, MAX_RAW_CMD_LEN-1)) == 0) {
+    char cmd[MAX_CMD_LEN] = {0};
+    char* cmd_ptr = cmd;
+    int cmd_len;
+    if ((cmd_len = read(client_fd, cmd, MAX_CMD_LEN-1)) == 0) {
         printf("Client exited\n");
         close(client_fd);
         return 1;
     }
-    char* cmd[MAX_CMD_LEN];
-    printf("Raw size: %d\n", raw_cmd_len);
-    int cmd_len = split_raw_cmd(raw_cmd, raw_cmd_len, cmd);
-    printf("Received: ");
-    for (int i = 0; i < cmd_len; i++) {
-        printf("%s ", cmd[i]);
-    }
-    printf("\n");
-    for (int i = 0; cmd[2][i] != '\0'; i++)
-        cmd[2][i] = toupper(cmd[2][i]);
-    if (!strcmp(cmd[2], "PING")) {
-        char pong_buff[] = "+PONG\r\n";
-        write(client_fd, pong_buff, sizeof(pong_buff)-1);
-    } else if (!strcmp(cmd[2], "ECHO")) {
-        char echo_buff[256];
-        int echo_buff_len = snprintf(echo_buff, 255, "$%d\r\n%s\r\n", strlen(cmd[4]), cmd[4]);
-        write(client_fd, echo_buff, echo_buff_len);
+    int ntokens = read_array_len(&cmd_ptr);
+    char oper[MAX_OPER_LEN];
+    int oper_len = read_bulk_string(&cmd_ptr, oper, MAX_OPER_LEN);
+    for (int i = 0; i < oper_len; i++)
+        oper[i] = toupper(oper[i]);
+    printf("Command: %s\n", oper);
+    if (!strcmp(oper, "PING")) {
+        handle_PING(&cmd_ptr, client_fd);
+    } else if (!strcmp(oper, "ECHO")) {
+        handle_ECHO(&cmd_ptr, client_fd);
     } else {
-        char pong_buff[] = "+PONG\r\n";
-        write(client_fd, pong_buff, sizeof(pong_buff)-1);
+        handle_PING(&cmd_ptr, client_fd);
     }
     return 0;
 }
