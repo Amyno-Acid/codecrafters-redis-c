@@ -8,6 +8,11 @@
 #include <unistd.h>
 #include <poll.h>
 
+#define SERVER_FD_IDX 0
+#define MAX_CLIENT 256
+#define MAX_CMD_LEN 256
+#define MAX_RAW_CMD_LEN 256
+
 int server_init(int port, int backlog) {
     int server_fd;
 
@@ -43,53 +48,104 @@ int server_init(int port, int backlog) {
     return server_fd;
 }
 
+struct client_pool {
+    struct pollfd fds[MAX_CLIENT];
+    struct sockaddr_in client_addrs[MAX_CLIENT];
+    int nfds;
+    socklen_t client_addr_len;
+};
+void client_pool_init(struct client_pool *this, int server_fd) {
+    this->fds[SERVER_FD_IDX].fd = server_fd;
+    this->fds[SERVER_FD_IDX].events = POLLIN;
+    this->fds[SERVER_FD_IDX].revents = 0;
+    this->nfds = 1;
+    this->client_addr_len = sizeof(struct sockaddr_in);
+}
+int add_client(struct client_pool *this) {
+    if (this->nfds == MAX_CLIENT) {
+        printf("Max no. clients reached\n");
+        return -1;
+    }
+    int client_fd = accept(
+        this->fds[SERVER_FD_IDX].fd,
+        (struct sockaddr*) &this->client_addrs[this->nfds],
+        &this->client_addr_len
+    );
+    if (client_fd == -1) {
+        printf("Accept failed: %s \n", strerror(errno));
+        return -1;
+    }
+    printf("Client #%d connected\n", this->nfds);
+    this->fds[this->nfds].fd = client_fd;
+    this->fds[this->nfds].events = POLLIN;
+    this->fds[this->nfds].revents = 0;
+    return this->nfds++;
+}
+int split_raw_cmd(char* raw_cmd, int raw_cmd_len, char** cmd) {
+    char buff[MAX_RAW_CMD_LEN];
+    int cmd_len = 0, buff_len = 0;
+    for (int i = 0; i < raw_cmd_len; i++) {
+        if (raw_cmd[i] != '\r') {
+            buff[buff_len++] = raw_cmd[i];
+            continue;
+        }
+        buff[buff_len++] = '\0';
+        cmd[cmd_len] = malloc(buff_len);
+        strcpy(cmd[cmd_len], buff);
+        if (++cmd_len == MAX_CMD_LEN)
+            break;
+        buff_len = 0;
+        ++i;
+    }
+    return cmd_len;
+}
+int handle_cmd(int client_fd) {
+    char raw_cmd[MAX_RAW_CMD_LEN];
+    int raw_cmd_len;
+    if ((raw_cmd_len = read(client_fd, raw_cmd, MAX_RAW_CMD_LEN-1)) == 0) {
+        printf("Client exited\n");
+        close(client_fd);
+        return 1;
+    }
+    char* cmd[MAX_CMD_LEN];
+    printf("Raw size: %d\n", raw_cmd_len);
+    int cmd_len = split_raw_cmd(raw_cmd, raw_cmd_len, cmd);
+    printf("Received: ");
+    for (int i = 0; i < cmd_len; i++) {
+        printf("%s ", cmd[i]);
+    }
+    printf("\n");
+    if (!strcmp(cmd[2], "PING")) {
+        char pong_buff[] = "+PONG\r\n";
+        write(client_fd, pong_buff, sizeof(pong_buff)-1);
+    } else if (!strcmp(cmd[2], "ECHO")) {
+        char echo_buff[256];
+        int echo_buff_len = snprintf(echo_buff, 255, "$%d\r\n%s\r\n", strlen(cmd[4]), cmd[4]);
+        write(client_fd, echo_buff, echo_buff_len);
+    } else {
+        char pong_buff[] = "+PONG\r\n";
+        write(client_fd, pong_buff, sizeof(pong_buff)-1);
+    }
+    return 0;
+}
+
 int main() {
 	// Disable output buffering
 	setbuf(stdout, NULL);
 
     int server_fd = server_init(6379, 5);
 
-    struct sockaddr_in client_addr;
-
-    struct pollfd fds[256] = {{server_fd, POLLIN, 0}};
-    struct sockaddr_in client_addrs[256];
-    int client_addr_len = sizeof(struct sockaddr_in);
-    int nfds = 1;
-    int ready = 0;
+    struct client_pool pool;
+    client_pool_init(&pool, server_fd);
     
-    while (ready = poll(fds, nfds, -1)) {
-        for (int i = 0; i < nfds; i++) {
-            if (!(fds[i].revents & POLLIN)) 
+    while (poll(pool.fds, pool.nfds, -1)) {
+        for (int i = 0; i < pool.nfds; i++) {
+            if (!(pool.fds[i].revents & POLLIN)) 
                 continue;
-            if (i == 0) {
-                if (nfds == 256) {
-                    printf("Max clients reached\n");
-                    continue;
-                }
-                int client_fd = accept(
-                    fds[i].fd,
-                    (struct sockaddr*) &client_addrs[nfds],
-                    &client_addr_len
-                );
-                if (client_fd == -1) {
-                    printf("Accept failed: %s \n", strerror(errno));
-                    continue;
-                }
-                printf("Client #%d connected\n", nfds);
-                fds[nfds].fd = client_fd;
-                fds[nfds].events = POLLIN;
-                fds[nfds].revents = 0;
-                ++nfds;
+            if (i == SERVER_FD_IDX) {
+                add_client(&pool);
             } else {
-                char pong_buff[] = "+PONG\r\n";
-                char cmd_buff[256];
-                if (read(fds[i].fd, cmd_buff, 255) == 0) {
-                    printf("Client #%d exited\n", i);
-                    close(fds[i].fd);
-                    continue;
-                }
-                printf("Command received: %s \n", cmd_buff);
-                write(fds[i].fd, pong_buff, sizeof(pong_buff)-1);
+                handle_cmd(pool.fds[i].fd);
             }
         }
     }
