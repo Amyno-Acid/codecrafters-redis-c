@@ -47,8 +47,15 @@ int main() {
     printf("Waiting for a client to connect...\n");
     client_addr_len = sizeof(client_addr);
 
-    accept(server_fd, (struct sockaddr*) &client_addr, &client_addr_len);
+    int client_fd = accept(server_fd, (struct sockaddr*) &client_addr, &client_addr_len);
+    if (client_fd == -1) {
+        printf("Accept failed: %s \n", strerror(errno));
+        return 1;
+    }
     printf("Client connected\n");
+
+    char buff[] = "+PONG\r\n";
+    write(client_fd, buff, sizeof(buff));
 
     close(server_fd);
 
