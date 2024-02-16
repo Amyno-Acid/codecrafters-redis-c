@@ -55,7 +55,7 @@ int main() {
     printf("Client connected\n");
 
     char buff[] = "+PONG\r\n";
-    write(client_fd, buff, sizeof(buff));
+    write(client_fd, buff, sizeof(buff)-1);
 
     close(server_fd);
 
