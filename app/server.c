@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <poll.h>
+#include <ctype.h>
 
 #define SERVER_FD_IDX 0
 #define MAX_CLIENT 256
@@ -115,6 +116,8 @@ int handle_cmd(int client_fd) {
         printf("%s ", cmd[i]);
     }
     printf("\n");
+    for (int i = 0; cmd[2][i] != '\0'; i++)
+        cmd[2][i] = toupper(cmd[2][i]);
     if (!strcmp(cmd[2], "PING")) {
         char pong_buff[] = "+PONG\r\n";
         write(client_fd, pong_buff, sizeof(pong_buff)-1);
