@@ -8,44 +8,106 @@
 #include <unistd.h>
 #include <poll.h>
 #include <ctype.h>
+#include <stdbool.h>
 
 #define SERVER_FD_IDX 0
 #define MAX_CLIENT 256
 #define MAX_CMD_LEN 256
 #define MAX_OPER_LEN 64
 
+struct entry {
+    bool occupied;
+    int key_len, val_len;
+    char *key, *val;
+};
+struct db {
+    int size, used;
+    struct entry *entries;
+};
+int db_init(struct db *this, int size) {
+    this->size = size;
+    this->used = 0;
+    this->entries = calloc(size, sizeof(struct entry));
+    if (!this->entries) {
+        printf("calloc failed\n");
+        return -1;
+    }
+    return 0;
+}
+size_t hash(char* str, int str_len, size_t max) {
+    size_t ret = 0;
+    for (int i = 0; i < str_len; i++)
+        ret = (ret << 5) ^ (ret + str[i]);
+    return ret % max;
+}
+int db_insert(struct db *this, char *key, int key_len, char *val, int val_len) {
+    if (this->used == this->size) {
+        printf("db_insert failed: database is full\n");
+        return -1;
+    }
+    size_t idx = hash(key, key_len, this->size);
+    while (this->entries[idx].occupied)
+        idx = (idx+1) % this->size;
+    this->entries[idx].occupied = 1;
+    this->entries[idx].key_len = key_len;
+    this->entries[idx].val_len = val_len;
+    this->entries[idx].key = malloc(key_len);
+    memcpy(this->entries[idx].key, key, key_len);
+    this->entries[idx].val = malloc(val_len);
+    memcpy(this->entries[idx].val, val, val_len);
+    ++this->used;
+    return idx;
+}
+int db_query(struct db *this, char *key, int key_len, char *val, int val_len) {
+    if (this->used == 0) {
+        printf("db_query failed: database is empty\n");
+        return -1;
+    }
+    size_t idx = hash(key, key_len, this->size);
+    size_t stop = idx;
+    while (
+        !this->entries[idx].occupied ||
+        this->entries[idx].key_len != key_len || 
+        strncmp(this->entries[idx].key, key, key_len)
+    ) {
+        idx = (idx+1) % this->size;
+        if (idx == stop) {
+            printf("Key %.*s not found\n", key_len, key);
+            return -2;
+        }
+    }
+    if (val_len > this->entries[idx].val_len)
+        val_len = this->entries[idx].val_len;
+    memcpy(val, this->entries[idx].val, val_len);
+    return val_len;
+}
+
 int server_init(int port, int backlog) {
     int server_fd;
-
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == -1) {
         printf("Socket creation failed: %s...\n", strerror(errno));
         return -1;
     }
-
     // Prevent 'Address already in use' errors
     int reuse = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0) {
         printf("SO_REUSEPORT failed: %s \n", strerror(errno));
         return -1;
     }
-
     struct sockaddr_in serv_addr = {
         .sin_family = AF_INET,
         .sin_port = htons(port),
         .sin_addr = { htonl(INADDR_ANY) },
     };
-
     if (bind(server_fd, (struct sockaddr*) &serv_addr, sizeof(serv_addr)) != 0) {
         printf("Bind failed: %s \n", strerror(errno));
         return -1;
     }
-
     if (listen(server_fd, backlog) != 0) {
         printf("Listen failed: %s \n", strerror(errno));
         return -1;
     }
-
     return server_fd;
 }
 
@@ -103,30 +165,81 @@ int read_bulk_string(char** cmd_ptr, char* buff, int max_len) {
         len = len*10 + (**cmd_ptr-'0');
     *cmd_ptr += 2;
     int i = 0;
-    for (; i < len && i < max_len-1; i++)
+    for (; i < len && i < max_len; i++)
         buff[i] = (*cmd_ptr)[i];
-    buff[i] = '\0';
     *cmd_ptr += len+2;
     return len;
 }
+int write_null(int fd) {
+    char null[] = "_\r\n";
+    int null_len = 3;
+    return write(fd, null, null_len);
+}
+int write_simple_string(int fd, char* str, int str_len) {
+    char simple_str[256];
+    int simple_str_len = snprintf(simple_str, 256, "+%.*s\r\n", str_len, str);
+    return write(fd, simple_str, simple_str_len);
+}
+int write_bulk_string(int fd, char* str, int str_len) {
+    char bulk_str[256];
+    int bulk_str_len = snprintf(bulk_str, 256, "$%d\r\n%.*s\r\n", str_len, str_len, str);
+    return write(fd, bulk_str, bulk_str_len);
+}
 int handle_PING(char** cmd_ptr, int client_fd) {
-    char pong_buff[] = "+PONG\r\n";
-    write(client_fd, pong_buff, sizeof(pong_buff)-1);
+    write_simple_string(client_fd, "PONG", 4);
     return 0;
 }
 int handle_ECHO(char** cmd_ptr, int client_fd) {
-    char echo_buff[256];
-    char arg[256];
-    int arg_len = read_bulk_string(cmd_ptr, arg, 256);
-    int echo_buff_len = snprintf(echo_buff, 256, "$%d\r\n%s\r\n", arg_len, arg);
-    write(client_fd, echo_buff, echo_buff_len);
+    char msg[256];
+    int msg_len = read_bulk_string(cmd_ptr, msg, 256);
+    if (msg_len == -1) {
+        printf("ECHO failed\n");
+        write_null(client_fd);
+        return -1;
+    }
+    write_bulk_string(client_fd, msg, msg_len);
     return 0;
 }
-int handle_cmd(int client_fd) {
+int handle_SET(char** cmd_ptr, int client_fd, struct db *database) {
+    char key[256], val[256];
+    int key_len = read_bulk_string(cmd_ptr, key, 256);
+    int val_len = read_bulk_string(cmd_ptr, val, 256);
+    if (key_len == -1 || val_len == -1) {
+        printf("SET failed\n");
+        write_null(client_fd);
+        return -1;
+    }
+    int idx = db_insert(database, key, key_len, val, val_len);
+    if (idx == -1) {
+        printf("SET failed\n");
+        write_null(client_fd);
+        return -1;
+    }
+    printf("%.*s : %.*s written at %d\n", key_len, key, val_len, val, idx);
+    write_simple_string(client_fd, "OK", 2);
+    return 0;
+}
+int handle_GET(char** cmd_ptr, int client_fd, struct db *database) {
+    char key[256], val[256];
+    int key_len = read_bulk_string(cmd_ptr, key, 256);
+    if (key_len == -1) {
+        printf("GET failed\n");
+        write_null(client_fd);
+        return -1;
+    }
+    int val_len = db_query(database, key, key_len, val, 256);
+    if (val_len < 0) {
+        printf("GET failed\n");
+        write_null(client_fd);
+        return -1;
+    }
+    write_bulk_string(client_fd, val, val_len);
+    return 0;
+}
+int handle_cmd(int client_fd, struct db *database) {
     char cmd[MAX_CMD_LEN] = {0};
     char* cmd_ptr = cmd;
-    int cmd_len;
-    if ((cmd_len = read(client_fd, cmd, MAX_CMD_LEN-1)) == 0) {
+    if (read(client_fd, cmd, MAX_CMD_LEN-1) == 0) {
         printf("Client exited\n");
         close(client_fd);
         return 1;
@@ -136,11 +249,14 @@ int handle_cmd(int client_fd) {
     int oper_len = read_bulk_string(&cmd_ptr, oper, MAX_OPER_LEN);
     for (int i = 0; i < oper_len; i++)
         oper[i] = toupper(oper[i]);
-    printf("Command: %s\n", oper);
-    if (!strcmp(oper, "PING")) {
+    if (!strncmp(oper, "PING", oper_len)) {
         handle_PING(&cmd_ptr, client_fd);
-    } else if (!strcmp(oper, "ECHO")) {
+    } else if (!strncmp(oper, "ECHO", oper_len)) {
         handle_ECHO(&cmd_ptr, client_fd);
+    } else if (!strncmp(oper, "SET", oper_len)) {
+        handle_SET(&cmd_ptr, client_fd, database);
+    } else if (!strncmp(oper, "GET", oper_len)) {
+        handle_GET(&cmd_ptr, client_fd, database);
     } else {
         handle_PING(&cmd_ptr, client_fd);
     }
@@ -153,6 +269,12 @@ int main() {
 
     int server_fd = server_init(6379, 5);
 
+    struct db database;
+    if (db_init(&database, 65536) == -1) {
+        printf("db_init failed\n");
+        return -1;
+    };
+
     struct client_pool pool;
     client_pool_init(&pool, server_fd);
     
@@ -163,7 +285,7 @@ int main() {
             if (i == SERVER_FD_IDX) {
                 add_client(&pool);
             } else {
-                handle_cmd(pool.fds[i].fd);
+                handle_cmd(pool.fds[i].fd, &database);
             }
         }
     }
