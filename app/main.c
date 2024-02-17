@@ -11,14 +11,14 @@ int main(int argc, char** argv) {
     svr.backlog = 5;
     svr.role = master;
 
-    // for (int i = 1; i < argc; i++) {
-    //     if (!strcmp(argv[i], "--port")) {
-    //         svr.port = atoi(argv[++i]);
-    //     } else if (!strcmp(argv[i], "--replicaof")) {
-    //         svr.role = slave;
-    //         svr.master_port = atoi(argv[i+=2]);
-    //     }
-    // }
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--port")) {
+            svr.port = atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--replicaof")) {
+            svr.role = slave;
+            svr.master_port = atoi(argv[i+=2]);
+        }
+    }
 
     if (server_init(&svr) == -1) {
         printf("server_init failed\n");
