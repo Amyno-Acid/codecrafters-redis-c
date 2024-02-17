@@ -9,6 +9,8 @@
 #include <poll.h>
 #include <ctype.h>
 #include <stdbool.h>
+#include <limits.h>
+#include <time.h>
 
 #define SERVER_FD_IDX 0
 #define MAX_CLIENT 256
@@ -17,6 +19,7 @@
 
 struct entry {
     bool occupied;
+    time_t expiry;
     int key_len, val_len;
     char *key, *val;
 };
@@ -40,15 +43,22 @@ size_t hash(char* str, int str_len, size_t max) {
         ret = (ret << 5) ^ (ret + str[i]);
     return ret % max;
 }
-int db_insert(struct db *this, char *key, int key_len, char *val, int val_len) {
+int db_update(struct db *this, char *key, int key_len, char *val, int val_len, time_t expiry) {
     if (this->used == this->size) {
-        printf("db_insert failed: database is full\n");
+        printf("db_update failed: database is full\n");
         return -1;
     }
     size_t idx = hash(key, key_len, this->size);
-    while (this->entries[idx].occupied)
+    while (
+        this->entries[idx].occupied &&
+        (
+            key_len != this->entries[idx].key_len ||
+            strncmp(this->entries[idx].key, key, key_len)
+        )
+    )
         idx = (idx+1) % this->size;
     this->entries[idx].occupied = 1;
+    this->entries[idx].expiry = expiry;
     this->entries[idx].key_len = key_len;
     this->entries[idx].val_len = val_len;
     this->entries[idx].key = malloc(key_len);
@@ -61,6 +71,7 @@ int db_insert(struct db *this, char *key, int key_len, char *val, int val_len) {
 int db_query(struct db *this, char *key, int key_len, char *val, int val_len) {
     size_t idx = hash(key, key_len, this->size);
     size_t stop = idx;
+    bool ok = 1;
     while (
         !this->entries[idx].occupied ||
         this->entries[idx].key_len != key_len || 
@@ -68,9 +79,20 @@ int db_query(struct db *this, char *key, int key_len, char *val, int val_len) {
     ) {
         idx = (idx+1) % this->size;
         if (idx == stop) {
-            printf("Key %.*s not found\n", key_len, key);
-            return -1;
+            ok = 0;
+            break;
         }
+    }
+    printf("Get at %d\n", time(NULL));
+    if (ok && time(NULL) > this->entries[idx].expiry) {
+        this->entries[idx].occupied = 0;
+        free(this->entries[idx].key);
+        free(this->entries[idx].val);
+        ok = 0;
+    }
+    if (!ok) {
+        printf("Key %.*s not found or has been expired\n", key_len, key);
+        return -1;
     }
     if (val_len > this->entries[idx].val_len)
         val_len = this->entries[idx].val_len;
@@ -183,11 +205,13 @@ int write_bulk_string(int fd, char* str, int str_len) {
     int bulk_str_len = snprintf(bulk_str, 256, "$%d\r\n%.*s\r\n", str_len, str_len, str);
     return write(fd, bulk_str, bulk_str_len);
 }
-int handle_PING(char** cmd_ptr, int client_fd) {
+int handle_PING(char** cmd_ptr, int *ntokens, int client_fd) {
     write_simple_string(client_fd, "PONG", 4);
+    *ntokens -= 1;
+    printf("Ping\n");
     return 0;
 }
-int handle_ECHO(char** cmd_ptr, int client_fd) {
+int handle_ECHO(char** cmd_ptr, int *ntokens, int client_fd) {
     char msg[256];
     int msg_len = read_bulk_string(cmd_ptr, msg, 256);
     if (msg_len == -1) {
@@ -196,9 +220,11 @@ int handle_ECHO(char** cmd_ptr, int client_fd) {
         return -1;
     }
     write_bulk_string(client_fd, msg, msg_len);
+    *ntokens -= 2;
+    printf("Echo \"%.*s\"\n", msg_len, msg);
     return 0;
 }
-int handle_SET(char** cmd_ptr, int client_fd, struct db *database) {
+int handle_SET(char** cmd_ptr, int *ntokens, int client_fd, struct db *database) {
     char key[256], val[256];
     int key_len = read_bulk_string(cmd_ptr, key, 256);
     int val_len = read_bulk_string(cmd_ptr, val, 256);
@@ -207,32 +233,51 @@ int handle_SET(char** cmd_ptr, int client_fd, struct db *database) {
         write_null(client_fd);
         return -1;
     }
-    int idx = db_insert(database, key, key_len, val, val_len);
+    *ntokens -= 3;
+
+    time_t expiry = INT_MAX;
+    if (*ntokens > 0) {
+        char opt[256], arg[256];
+        int opt_len = read_bulk_string(cmd_ptr, opt, 256);
+        for (int i = 0; i < opt_len; i++)
+            opt[i] = toupper(opt[i]);
+        if (opt_len == 2 && !strncmp(opt, "PX", 2)) {
+            int arg_len = read_bulk_string(cmd_ptr, arg, 255);
+            arg[arg_len] = '\0';
+            expiry = time(NULL) + atoi(arg)/1000;
+        }
+    }
+
+    int idx = db_update(database, key, key_len, val, val_len, expiry);
     if (idx == -1) {
         printf("SET failed\n");
         write_null(client_fd);
         return -1;
     }
-    printf("%.*s : %.*s written at %d\n", key_len, key, val_len, val, idx);
+    printf("Set %.*s -> %.*s (#%d), expiry: %d\n", key_len, key, val_len, val, idx, expiry);
     write_simple_string(client_fd, "OK", 2);
     return 0;
 }
-int handle_GET(char** cmd_ptr, int client_fd, struct db *database) {
+int handle_GET(char** cmd_ptr, int *ntokens, int client_fd, struct db *database) {
     char key[256], val[256];
     int key_len = read_bulk_string(cmd_ptr, key, 256);
     if (key_len == -1) {
-        printf("GET failed\n");
+        printf("GET %.*s failed\n", key_len, key);
         write_null(client_fd);
         return -1;
     }
     int val_len = db_query(database, key, key_len, val, 256);
     write_bulk_string(client_fd, val, val_len);
+    *ntokens -= 2;
+    if (val_len != -1)
+        printf("Get %.*s -> %.*s\n", key_len, key, val_len, val);
     return 0;
 }
 int handle_cmd(int client_fd, struct db *database) {
     char cmd[MAX_CMD_LEN] = {0};
     char* cmd_ptr = cmd;
-    if (read(client_fd, cmd, MAX_CMD_LEN-1) == 0) {
+    int cmd_len;
+    if ((cmd_len = read(client_fd, cmd, MAX_CMD_LEN-1)) == 0) {
         printf("Client exited\n");
         close(client_fd);
         return 1;
@@ -243,15 +288,15 @@ int handle_cmd(int client_fd, struct db *database) {
     for (int i = 0; i < oper_len; i++)
         oper[i] = toupper(oper[i]);
     if (!strncmp(oper, "PING", oper_len)) {
-        handle_PING(&cmd_ptr, client_fd);
+        handle_PING(&cmd_ptr, &ntokens, client_fd);
     } else if (!strncmp(oper, "ECHO", oper_len)) {
-        handle_ECHO(&cmd_ptr, client_fd);
+        handle_ECHO(&cmd_ptr, &ntokens, client_fd);
     } else if (!strncmp(oper, "SET", oper_len)) {
-        handle_SET(&cmd_ptr, client_fd, database);
+        handle_SET(&cmd_ptr, &ntokens, client_fd, database);
     } else if (!strncmp(oper, "GET", oper_len)) {
-        handle_GET(&cmd_ptr, client_fd, database);
+        handle_GET(&cmd_ptr, &ntokens, client_fd, database);
     } else {
-        handle_PING(&cmd_ptr, client_fd);
+        handle_PING(&cmd_ptr, &ntokens, client_fd);
     }
     return 0;
 }
