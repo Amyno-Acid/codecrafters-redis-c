@@ -8,7 +8,7 @@ int server_init(struct server *this) {
     }
     // Prevent 'Address already in use' errors
     this->reuse = 1;
-    if (setsockopt(this->fd, SOL_SOCKET, SO_REUSEPORT, &this->reuse, sizeof(this->reuse)) < 0) {
+    if (setsockopt(this->fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &this->reuse, sizeof(int)) < 0) {
         printf("SO_REUSEPORT failed: %s \n", strerror(errno));
         return -1;
     }
