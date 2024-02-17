@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <string.h>
@@ -10,7 +11,8 @@
 #include <ctype.h>
 #include <stdbool.h>
 #include <limits.h>
-#include <time.h>
+
+typedef long long ms;
 
 #define SERVER_FD_IDX 0
 #define MAX_CLIENT 256
@@ -19,7 +21,7 @@
 
 struct entry {
     bool occupied;
-    time_t expiry;
+    ms expiry;
     int key_len, val_len;
     char *key, *val;
 };
@@ -27,6 +29,11 @@ struct db {
     int size, used;
     struct entry *entries;
 };
+ms mstime() {
+    struct timeval curr;
+    gettimeofday(&curr, NULL);
+    return curr.tv_sec*1000 + curr.tv_usec/1000;
+}
 int db_init(struct db *this, int size) {
     this->size = size;
     this->used = 0;
@@ -43,7 +50,7 @@ size_t hash(char* str, int str_len, size_t max) {
         ret = (ret << 5) ^ (ret + str[i]);
     return ret % max;
 }
-int db_update(struct db *this, char *key, int key_len, char *val, int val_len, time_t expiry) {
+int db_update(struct db *this, char *key, int key_len, char *val, int val_len, ms expiry) {
     if (this->used == this->size) {
         printf("db_update failed: database is full\n");
         return -1;
@@ -83,8 +90,7 @@ int db_query(struct db *this, char *key, int key_len, char *val, int val_len) {
             break;
         }
     }
-    printf("Get at %d\n", time(NULL));
-    if (ok && time(NULL) > this->entries[idx].expiry) {
+    if (ok && mstime() > this->entries[idx].expiry) {
         this->entries[idx].occupied = 0;
         free(this->entries[idx].key);
         free(this->entries[idx].val);
@@ -235,7 +241,7 @@ int handle_SET(char** cmd_ptr, int *ntokens, int client_fd, struct db *database)
     }
     *ntokens -= 3;
 
-    time_t expiry = INT_MAX;
+    ms expiry = LLONG_MAX;
     if (*ntokens > 0) {
         char opt[256], arg[256];
         int opt_len = read_bulk_string(cmd_ptr, opt, 256);
@@ -244,7 +250,7 @@ int handle_SET(char** cmd_ptr, int *ntokens, int client_fd, struct db *database)
         if (opt_len == 2 && !strncmp(opt, "PX", 2)) {
             int arg_len = read_bulk_string(cmd_ptr, arg, 255);
             arg[arg_len] = '\0';
-            expiry = time(NULL) + atoi(arg)/1000;
+            expiry = mstime() + atoll(arg);
         }
     }
 
@@ -254,7 +260,7 @@ int handle_SET(char** cmd_ptr, int *ntokens, int client_fd, struct db *database)
         write_null(client_fd);
         return -1;
     }
-    printf("Set %.*s -> %.*s (#%d), expiry: %d\n", key_len, key, val_len, val, idx, expiry);
+    printf("Set %.*s -> %.*s (#%d), expiry: %lld\n", key_len, key, val_len, val, idx, expiry);
     write_simple_string(client_fd, "OK", 2);
     return 0;
 }
@@ -270,7 +276,7 @@ int handle_GET(char** cmd_ptr, int *ntokens, int client_fd, struct db *database)
     write_bulk_string(client_fd, val, val_len);
     *ntokens -= 2;
     if (val_len != -1)
-        printf("Get %.*s -> %.*s\n", key_len, key, val_len, val);
+        printf("Get %.*s -> %.*s at %lld\n", key_len, key, val_len, val, mstime());
     return 0;
 }
 int handle_cmd(int client_fd, struct db *database) {
