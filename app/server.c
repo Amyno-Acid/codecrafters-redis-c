@@ -279,6 +279,11 @@ int handle_GET(char** cmd_ptr, int *ntokens, int client_fd, struct db *database)
         printf("Get %.*s -> %.*s at %lld\n", key_len, key, val_len, val, mstime());
     return 0;
 }
+int handle_INFO(char** cmd_ptr, int *ntokens, int client_fd) {
+    write_bulk_string(client_fd, "role:master", 11);
+    printf("INFO\n");
+    return 0;
+}
 int handle_cmd(int client_fd, struct db *database) {
     char cmd[MAX_CMD_LEN] = {0};
     char* cmd_ptr = cmd;
@@ -301,6 +306,8 @@ int handle_cmd(int client_fd, struct db *database) {
         handle_SET(&cmd_ptr, &ntokens, client_fd, database);
     } else if (!strncmp(oper, "GET", oper_len)) {
         handle_GET(&cmd_ptr, &ntokens, client_fd, database);
+    } else if (!strncmp(oper, "INFO", oper_len)) {
+        handle_INFO(&cmd_ptr, &ntokens, client_fd);
     } else {
         handle_PING(&cmd_ptr, &ntokens, client_fd);
     }
