@@ -30,6 +30,10 @@ int server_init(struct server *this) {
     return 0;
 }
 
+int server_close(struct server *this) {
+    close(this->fd);
+}
+
 void client_pool_init(struct client_pool *this, int server_fd) {
     this->fds[SERVER_FD_IDX].fd = server_fd;
     this->fds[SERVER_FD_IDX].events = POLLIN;

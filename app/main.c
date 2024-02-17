@@ -36,5 +36,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    server_close(&svr);
+
 	return 0;
 }

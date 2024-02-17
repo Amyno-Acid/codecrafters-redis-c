@@ -36,5 +36,6 @@ struct server {
 };
 
 int server_init(struct server *this);
+int server_close(struct server *this);
 void client_pool_init(struct client_pool *this, int server_fd);
 int add_client(struct client_pool *this);
