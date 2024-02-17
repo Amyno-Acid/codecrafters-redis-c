@@ -59,10 +59,6 @@ int db_insert(struct db *this, char *key, int key_len, char *val, int val_len) {
     return idx;
 }
 int db_query(struct db *this, char *key, int key_len, char *val, int val_len) {
-    if (this->used == 0) {
-        printf("db_query failed: database is empty\n");
-        return -1;
-    }
     size_t idx = hash(key, key_len, this->size);
     size_t stop = idx;
     while (
@@ -73,7 +69,7 @@ int db_query(struct db *this, char *key, int key_len, char *val, int val_len) {
         idx = (idx+1) % this->size;
         if (idx == stop) {
             printf("Key %.*s not found\n", key_len, key);
-            return -2;
+            return -1;
         }
     }
     if (val_len > this->entries[idx].val_len)
@@ -182,6 +178,8 @@ int write_simple_string(int fd, char* str, int str_len) {
 }
 int write_bulk_string(int fd, char* str, int str_len) {
     char bulk_str[256];
+    if (str_len == -1)
+        return write(fd, "$-1\r\n", 5);
     int bulk_str_len = snprintf(bulk_str, 256, "$%d\r\n%.*s\r\n", str_len, str_len, str);
     return write(fd, bulk_str, bulk_str_len);
 }
@@ -228,11 +226,6 @@ int handle_GET(char** cmd_ptr, int client_fd, struct db *database) {
         return -1;
     }
     int val_len = db_query(database, key, key_len, val, 256);
-    if (val_len < 0) {
-        printf("GET failed\n");
-        write_null(client_fd);
-        return -1;
-    }
     write_bulk_string(client_fd, val, val_len);
     return 0;
 }
