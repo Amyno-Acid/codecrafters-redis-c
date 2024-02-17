@@ -307,11 +307,14 @@ int handle_cmd(int client_fd, struct db *database) {
     return 0;
 }
 
-int main() {
+int main(int argc, char** argv) {
 	// Disable output buffering
 	setbuf(stdout, NULL);
 
-    int server_fd = server_init(6379, 5);
+    int port = 6379;
+    if (argc >= 3)
+        port = atoi(argv[2]);
+    int server_fd = server_init(port, 5);
 
     struct db database;
     if (db_init(&database, 65536) == -1) {
