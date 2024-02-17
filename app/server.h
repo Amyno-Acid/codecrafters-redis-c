@@ -29,7 +29,7 @@ struct client_pool {
 };
 
 struct server {
-    int port, master_port, backlog, fd;
+    int port, master_port, backlog, fd, reuse;
     enum server_role role;
     struct client_pool pool;
     struct database db;
