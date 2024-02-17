@@ -48,6 +48,12 @@ int write_bulk_string(int fd, char* str, int str_len) {
     return write(fd, bulk_str, bulk_str_len);
 }
 
+int write_array_len(int fd, int len) {
+    char array_len[256];
+    int array_len_len = snprintf(array_len, 256, "*%d\r\n", len);
+    return write(fd, array_len, array_len_len);
+}
+
 int handle_PING(char** cmd_ptr, int *ntokens, int client_fd) {
     write_simple_string(client_fd, "PONG", 4);
     *ntokens -= 1;
@@ -121,9 +127,9 @@ int handle_GET(char** cmd_ptr, int *ntokens, int client_fd, struct database *db)
 }
 
 int handle_INFO(char** cmd_ptr, int *ntokens, int client_fd, enum server_role role) {
-    char info[256];
-    int info_len = snprintf(info, 256, "role:%s", role == master ? "master" : "slave");
-    write_bulk_string(client_fd, info, info_len);
+    char field[256];
+    int field_len = snprintf(field, 256, "role:%s\r\n", role == master ? "master" : "slave");
+    write_bulk_string(client_fd, field, field_len);
     printf("INFO\n");
     return 0;
 }
