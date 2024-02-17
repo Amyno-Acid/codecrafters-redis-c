@@ -20,6 +20,8 @@ int main(int argc, char** argv) {
         }
     }
 
+    printf("Options:\n  role:%d\n  port:%d\n  master:%d\n", svr.role, svr.port, svr.master_port);
+
     if (server_init(&svr) == -1) {
         printf("server_init failed\n");
     };
