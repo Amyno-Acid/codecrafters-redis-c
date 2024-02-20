@@ -128,7 +128,11 @@ int handle_GET(char** cmd_ptr, int *ntokens, int client_fd, struct database *db)
 
 int handle_INFO(char** cmd_ptr, int *ntokens, int client_fd, enum server_role role) {
     char field[256];
-    int field_len = snprintf(field, 256, "role:%s\r\n", role == master ? "master" : "slave");
+    int field_len = snprintf(
+        field, 256,
+        "role:%s\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\r\nmaster_repl_offset:0\r\n",
+        role == master ? "master" : "slave"
+    );
     write_bulk_string(client_fd, field, field_len);
     printf("INFO\n");
     return 0;
